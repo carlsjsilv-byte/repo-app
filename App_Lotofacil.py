@@ -3,114 +3,110 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import random
 import requests
-from io import StringIO
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
-st.set_page_config(page_title="Lotofácil Inteligente - Dados Reais", page_icon="🍀", layout="wide")
+st.set_page_config(page_title="Lotofácil Inteligente V2", page_icon="🍀", layout="wide")
 
-# --- 1. FUNÇÃO PARA BAIXAR DADOS REAIS DA CAIXA ---
-@st.cache_data(ttl=3600)  # Faz o download apenas uma vez por hora
-def baixar_dados_reais():
-    # URL da API de resultados da Lotofácil (Baseada no Portal de Loterias)
-    url = "https://servicebus2.caixa.gov.br/portaldeloterias/api/lotofacil/"
+# --- 1. CAPTURA DE DADOS (Últimos 10 Jogos) ---
+@st.cache_data(ttl=3600)
+def buscar_historico_10():
+    url_base = "https://servicebus2.caixa.gov.br/portaldeloterias/api/lotofacil/"
+    headers = {"User-Agent": "Mozilla/5.0"}
     
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"
-    }
-
+    resultados = []
     try:
-        # Buscamos o último concurso para ter uma base
-        response = requests.get(url, headers=headers, verify=False)
-        if response.status_code == 200:
-            dados_json = response.json()
-            
-            # Extraímos as dezenas do último sorteio da API oficial
-            ultimo_resultado_lista = [int(n) for n in dados_json['listaDezenas']]
-            concurso_n = dados_json['numero']
-            
-            # Para a análise histórica completa, simulamos o DataFrame com base no histórico
-            # (Em um sistema de produção, você baixaria o CSV completo aqui)
-            # Como o download do CSV completo da Caixa é instável via script, 
-            # usaremos o último sorteio real da API e um histórico simulado para análise.
-            
-            st.sidebar.success(f"✅ Conectado à Caixa: Concurso {concurso_n} carregado!")
-            return ultimo_resultado_lista, concurso_n
-        else:
-            st.sidebar.error("⚠️ Falha ao acessar API da Caixa. Usando dados locais.")
-            return [1, 2, 3, 5, 8, 10, 12, 13, 15, 17, 19, 20, 22, 24, 25], 0
-    except Exception as e:
-        st.sidebar.error(f"❌ Erro de conexão: {e}")
-        return [1, 2, 3, 5, 8, 10, 12, 13, 15, 17, 19, 20, 22, 24, 25], 0
+        # Busca o último para saber o número do concurso
+        req = requests.get(url_base, headers=headers, verify=False)
+        ultimo_n = req.json()['numero']
+        
+        # Loop para pegar os últimos 10 (Simulação de busca sequencial)
+        # Nota: Na API oficial, você pode precisar iterar ou usar um endpoint de histórico
+        for i in range(10):
+            n_concurso = ultimo_n - i
+            res = requests.get(f"{url_base}{n_concurso}", headers=headers, verify=False)
+            if res.status_code == 200:
+                dezenas = [int(n) for n in res.json()['listaDezenas']]
+                resultados.append(dezenas)
+        
+        return resultados, ultimo_n
+    except:
+        # Fallback caso a API falhe (Dados fictícios para exemplo)
+        return [[random.sample(range(1, 26), 15)] for _ in range(10)], 0
 
-# --- 2. LÓGICA DE FILTRAGEM ---
+# --- 2. LÓGICA DE PROBABILIDADE ---
+def analisar_frequencia(historico):
+    # Conta quantas vezes cada número apareceu nos últimos 10
+    contagem = {i: 0 for i in range(1, 26)}
+    for sorteio in historico:
+        for num in sorteio:
+            contagem[num] += 1
+    return contagem
 
-def gerar_jogo_ideal(referencia):
+def gerar_jogo_probabilistico(frequencia, ultimo_resultado):
     tentativas = 0
+    # Classifica números
+    quentes = [n for n, f in frequencia.items() if f >= 7] # Sairam em 70%+ dos jogos
+    frios = [n for n, f in frequencia.items() if f <= 3]   # Sairam em 30%- dos jogos
+    neutros = [n for n, f in frequencia.items() if 3 < f < 7]
+
     while True:
         tentativas += 1
-        jogo = sorted(random.sample(range(1, 26), 15))
+        # Estratégia: Pegar 8 quentes, 4 neutros e 3 frios (Exemplo de balanço)
+        jogo = random.sample(quentes, min(len(quentes), 8)) + \
+               random.sample(neutros, min(len(neutros), 5)) + \
+               random.sample(frios, min(len(frios), 2))
         
+        # Preencher se faltar números para fechar 15
+        while len(jogo) < 15:
+            n = random.randint(1, 25)
+            if n not in jogo: jogo.append(n)
+            
+        jogo = sorted(jogo)
+        
+        # Filtros Estatísticos
         pares = len([n for n in jogo if n % 2 == 0])
-        repetidos = len(set(jogo) & set(referencia))
+        repetidos = len(set(jogo) & set(ultimo_resultado))
         soma = sum(jogo)
-        
-        # Filtros baseados em tendências reais de sucesso
-        if (pares in [7, 8]) and (repetidos in [8, 9, 10]) and (180 <= soma <= 210):
+
+        # Critérios de Ouro:
+        if (7 <= pares <= 8) and (8 <= repetidos <= 10) and (170 <= soma <= 220):
             return jogo, tentativas, pares, repetidos, soma
 
-# --- 3. INTERFACE DO USUÁRIO (STREAMLIT) ---
+# --- 3. INTERFACE ---
+st.title("🍀 Lotofácil Pro: Análise dos Últimos 10 Jogos")
 
-# Título e Cabeçalho
-st.title("🍀 Lotofácil Pro: Dados Reais via API")
-st.markdown("Este sistema conecta-se aos servidores da Caixa para analisar tendências e gerar jogos com maior probabilidade estatística.")
-
-# Carregamento dos dados
-ultimo_real, n_concurso = baixar_dados_reais()
+historico, ultimo_id = buscar_historico_10()
+freq = analisar_frequencia(historico)
 
 col1, col2 = st.columns([1, 1])
 
 with col1:
-    st.subheader("📊 Último Resultado Oficial")
-    if n_concurso > 0:
-        st.write(f"**Concurso:** {n_concurso}")
+    st.subheader("📊 Frequência nos Últimos 10 Concursos")
+    df_freq = pd.DataFrame(list(freq.items()), columns=['Número', 'Frequência'])
     
-    # Exibição visual das dezenas da Caixa
-    dezenas_formatadas = " ".join([f"**[{n:02d}]**" for n in ultimo_real])
-    st.markdown(f"### {dezenas_formatadas}")
-    
-    st.divider()
-    
-    st.subheader("📈 Gráfico de Tendência (Padrão 9 Repetidos)")
-    # Gráfico de barras estatístico
-    fig, ax = plt.subplots(figsize=(6, 4))
-    x = ['7', '8', '9', '10', '11']
-    y = [15, 25, 33, 20, 7] # % de ocorrência histórica
-    cores = ['#D3D3D3', '#A9A9A9', '#2E7D32', '#A9A9A9', '#D3D3D3']
-    
-    ax.bar(x, y, color=cores)
-    ax.set_title("% de Vezes que o nº se repete do anterior")
+    # Gráfico de Calor
+    fig, ax = plt.subplots(figsize=(10, 4))
+    cores = ['red' if f > 7 else 'green' if f > 4 else 'gray' for f in df_freq['Frequência']]
+    ax.bar(df_freq['Número'], df_freq['Frequência'], color=cores)
+    ax.set_xticks(range(1, 26))
+    ax.set_ylabel("Vezes que sorteado")
     st.pyplot(fig)
+    st.caption("🔴 Quentes | 🟢 Médios | ⚪ Frios (Tendência de atraso)")
+
+
 
 with col2:
-    st.subheader("🎲 Gerador Inteligente")
-    st.write("O algoritmo descartará automaticamente jogos que fogem dos padrões de Paridade, Soma e Repetição.")
-    
-    if st.button("Gerar Jogo Baseado no Último Concurso"):
-        with st.spinner('Processando estatísticas...'):
-            jogo_sugerido, busca, p, r, s = gerar_jogo_ideal(ultimo_real)
+    st.subheader("🎲 Gerador Baseado em Tendência")
+    if st.button("Gerar Jogo Otimizado"):
+        ultimo_sorteio = historico[0]
+        jogo, busca, p, r, s = gerar_jogo_probabilistico(freq, ultimo_sorteio)
         
-        st.success("### ✅ Jogo Sugerido:")
-        # Exibição do jogo em colunas para parecer "bolinhas"
-        cols = st.columns(5)
-        for i, n in enumerate(jogo_sugerido):
-            cols[i % 5].button(f"{n:02d}", key=f"btn_{i}", disabled=False)
+        st.success(f"### {jogo}")
         
-        with st.expander("🔍 Por que este jogo foi escolhido?"):
-            st.write(f"🔹 **Pares/Ímpares:** {p}P / {15-p}I (Padrão de Ouro)")
-            st.write(f"🔹 **Repetidos do Concurso {n_concurso}:** {r} números")
-            st.write(f"🔹 **Soma das Dezenas:** {s} (Ideal entre 180-210)")
-            st.write(f"⚠️ O motor de análise descartou **{busca}** jogos fracos antes de sugerir este.")
-
-# Rodapé
-st.sidebar.markdown("---")
-st.sidebar.caption("Desenvolvido para Análise Estatística. Use com responsabilidade. Loterias envolvem risco.")
+        st.info(f"""
+        **Análise Técnica:**
+        - **Pares:** {p} | **Ímpares:** {15-p}
+        - **Repetidos do último:** {r}
+        - **Soma:** {s}
+        - **Esforço computacional:** {busca} combinações analisadas.
+        """)
